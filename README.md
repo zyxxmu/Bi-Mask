@@ -1,4 +1,4 @@
-# Bi-directional Masks for Efficient N:M Sparse Training ([Paper Link](https://arxiv.org/abs/2302.06058))
+# Bi-directional Masks for Efficient N:M Sparse Training (ICML 2023) ([Paper Link](https://arxiv.org/abs/2302.06058))
 
 
 ## Requirements
