@@ -28,22 +28,7 @@ def get_n_m_sparse_matrix(w):
     mask = mask.scatter_(dim=1, index=index, value=0).reshape(w.t().shape).t()
     return w * mask, mask
 
-def get_transposable_sparse_matrix(w):
-    init = torch.tensor([[1,1,0,0],[1,1,0,0],[0,0,1,1],[0,0,1,1]])
-    length = w.numel()
-    group = int(length / (M * M))
-
-    mask = init.repeat(group, 1)
-    mask = mask.to(device=w.device)
-    mask = mask.view(mask.numel(), -1).squeeze()
-    if(length != mask.numel()):
-        delt = length - mask.numel()
-        mask = torch.cat((mask, torch.zeros([delt], dtype=torch.int)))
-    
-    mask = mask.reshape(w.shape)
-    return w * mask, mask
-
-class MyConv2d_Lay(autograd.Function):
+class MyConv2d(autograd.Function):
     @staticmethod
     def forward(ctx, weight, inp_unf, forward_mask, backward_mask, decay = 0.0002):
         ctx.save_for_backward(weight, inp_unf, backward_mask)
@@ -66,11 +51,9 @@ class MyConv2d_Lay(autograd.Function):
         return g_w_s , g_inp_unf, None, None, None
 
 
-
 def get_best_permutation(w):
     length = w.numel()
     group = int(length / M)
-    # print(w.shape)
     w = w.t()
     mask_sum_max = 0
     mask_sum_min = 1e8
@@ -104,44 +87,6 @@ def get_best_permutation(w):
     return best_perm
 
 
-def get_prob_backward_matrix(forward_mask, weight, permutation):
-    weight = weight.t()[permutation].t()
-    forward_mask = forward_mask.t()[permutation].t()
-
-    final_mask = get_prob_mask(weight, forward_mask).t()
-
-    # recover the backwardmask with best permutation
-    idx = torch.tensor(np.array([permutation])).t().repeat_interleave(weight.t().size(1), dim=1)
-    idx = idx.to(device=weight.device)
-    B_M = torch.zeros(weight.t().size(), device=weight.device).scatter_(dim=0, index=idx, src=final_mask).t()
-
-    return B_M
-
-
-def get_random_backward_matrix(forward_mask, w_s, permutation):
-    # import pdb; pdb.set_trace()
-    w_s = w_s.t()
-    forward_mask = forward_mask.t()
-    length = w_s.numel()
-    group = int(length / M)
-    # change with the permutation
-    mask = forward_mask[permutation]
-    w_backward = w_s[permutation]
-    w_backward = w_backward.t()
-    
-    # get the backwardmask
-    w_tmp = w_backward.abs().reshape(group, M)
-    index = torch.randint(4, (group, M-N)).to(device=w_tmp.device)
-    mask_b = torch.ones(w_tmp.shape, device=w_tmp.device)
-    mask_b = mask_b.scatter_(dim=1, index=index, value=0).reshape(w_backward.shape).t()
-    final_mask = mask * mask_b
-
-    # recover the backwardmask with best permutation
-    idx = torch.tensor(np.array([permutation])).t().repeat_interleave(w_s.size(1), dim=1)
-    idx = idx.to(device=w_s.device)
-    B_M = torch.zeros(w_s.size(), device=w_s.device).scatter_(dim=0, index=idx, src=final_mask).t()
-
-    return B_M
 
 def get_n_m_backward_matrix(forward_mask, w_s, permutation):
     # import pdb; pdb.set_trace()
@@ -184,30 +129,15 @@ class NMConv(nn.Conv2d):
         self.forward_mask = torch.zeros(self.weight.view(self.weight.size(0), -1).t().shape).requires_grad_(False)
         self.backward_mask = torch.zeros(self.weight.view(self.weight.size(0), -1).t().shape).requires_grad_(False)
         self.unfold = nn.Unfold(kernel_size=self.kernel_size, dilation=self.dilation, padding=self.padding, stride=self.stride)
-    def get_SW(self, weight):
-        length = weight.numel()
-        group = int(length / self.M)
-        weight_temp = weight.detach().abs().reshape(group, M)
-        index = torch.argsort(weight_temp, dim=1)[:, :int(M - N)]
-        mask = torch.ones(weight_temp.shape, device=weight_temp.device)
-        mask = mask.scatter_(dim=1, index=index, value=0).reshape(weight.shape)
-        return self.weight * mask
-    def get_SR_sparsity(self):
-        return SRConv.apply(self.weight)
-
 
     def forward(self, x):
         w = self.weight.view(self.weight.size(0), -1).t()
         if self.iter % self.max_iter == 0:
-            # import pdb; pdb.set_trace()
             self.permute_idx = get_best_permutation(w)
-            # logger.info(self.permute_idx) 
         w_s, self.forward_mask = get_n_m_sparse_matrix(w)
-        self.backward_mask = get_n_m_backward_matrix(self.forward_mask, w_s, self.permute_idx)
-        # self.backward_mask = get_prob_backward_matrix(self.forward_mask, w, self.permute_idx)   
-        # self.backward_mask = get_random_backward_matrix(self.forward_mask, w_s, self.permute_idx)     
+        self.backward_mask = get_n_m_backward_matrix(self.forward_mask, w_s, self.permute_idx)   
         inp_unf = self.unfold(x)
-        out_unf = MyConv2d_Lay.apply(w, inp_unf.transpose(1, 2), self.forward_mask, self.backward_mask)
+        out_unf = MyConv2d.apply(w, inp_unf.transpose(1, 2), self.forward_mask, self.backward_mask)
         if self.flag == False:
             self.fold = nn.Fold((int(math.sqrt(out_unf.shape[1])), int(math.sqrt(out_unf.shape[1]))), (1,1))
             self.flag = True
